@@ -1,0 +1,59 @@
+enum Step {
+  CartReview,
+  RiskCheck,
+  HumanApproval,
+  PayWithWUSD,
+  PlaceSupplierOrder,
+  FulfillmentUpdate
+}
+
+enum RunStatus {
+  Continue,
+  Failed,
+  Pending,
+  Done
+}
+
+enum Model {
+  GPT_5POINT1,
+  CLAUDE_SONNET,
+  MISTRAL_LARGE
+}
+
+record PromptPlan {
+  prompts: string
+}
+
+record ExecutionContext {
+  step: string,
+  answers: string,
+  prompt_plan: PromptPlan,
+  model: Model,
+  model_key: string,
+  context: string
+}
+interface DropshippingStepAgent {
+
+  query func run(
+    namespace: string,
+    flow_id: string,
+    execution_context: ExecutionContext
+  ) -> RunStatus;
+
+  query func resume(
+    namespace: string,
+    flow_id: string
+  ) -> RunStatus;
+
+  query func get_context(
+    namespace: string,
+    flow_id: string
+  ) -> ExecutionContext;
+
+  mutate func attach_context(
+    namespace: string,
+    flow_id: string,
+    key: string,
+    value: string
+  ) -> string
+}

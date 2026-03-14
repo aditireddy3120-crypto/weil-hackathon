@@ -1,0 +1,10 @@
+langgraph>=0.1.0
+langchain-ollama>=0.2.0
+langchain-openai>=0.2.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# NOTE: The Weilchain Python SDK package name varies by distribution and may not
+# be published on PyPI. For local dev (Option A), we run with a stub client.
+# Install the official Weilchain SDK separately when you move to on-chain mode.
+
