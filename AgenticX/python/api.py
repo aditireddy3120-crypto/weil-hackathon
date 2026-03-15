@@ -1,6 +1,7 @@
-﻿from typing import Dict, List, Optional
+from typing import Dict, List, Optional
 from ai_supplier_agent import select_supplier
 import requests
+import uuid
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,11 +108,10 @@ async def list_products():
 @app.post("/orders")
 async def create_order(req: CreateOrderRequest):
 
-    flow_id = str(len(FLOW_REGISTRY) + 1)
+    flow_id = str(uuid.uuid4())  # unique ID
 
     cart = [item.dict() for item in req.cart]
 
-    # AI supplier decision
     supplier = select_supplier(cart)
 
     state = {
@@ -125,7 +125,6 @@ async def create_order(req: CreateOrderRequest):
 
     FLOW_REGISTRY[flow_id] = state
 
-    # Trigger Rust StepAgent
     try:
         requests.post(
             f"{WEIL_RPC}/step-agent/{STEP_AGENT_ADDRESS}/run",
@@ -136,7 +135,7 @@ async def create_order(req: CreateOrderRequest):
             }
         )
     except:
-        print("StepAgent not reachable (dev mode)")
+        print("StepAgent not reachable")
 
     return state
 
@@ -153,14 +152,13 @@ async def order_status(flow_id: str):
 
     state = FLOW_REGISTRY[flow_id]
 
-    return {
-        "flow_id": state["flow_id"],
-        "cart": state["cart"],
-        "supplier": state["supplier"],
-        "status": state["status"],
-        "human_prompt": state.get("human_prompt"),
-        "payment_intent": state.get("payment_intent")
-    }
+    # Auto cleanup finished orders after status read
+    if state["status"] in ["rejected", "payment_confirmed"]:
+        result = state.copy()
+        del FLOW_REGISTRY[flow_id]
+        return result
+
+    return state
 
 
 # -----------------------------
@@ -169,7 +167,6 @@ async def order_status(flow_id: str):
 
 @app.get("/orders")
 async def list_orders():
-
     return list(FLOW_REGISTRY.values())
 
 
@@ -185,32 +182,36 @@ async def human_approval(flow_id: str, body: HumanDecisionRequest):
 
     state = FLOW_REGISTRY[flow_id]
 
-    # Move order to payment stage
-    state["status"] = "payment_pending"
+    if body.decision == "approve":
 
-    # Create payment intent
-    state["payment_intent"] = {
-        "merchant_wallet": "0xMERCHANT_WALLET",
-        "amount_wusd": 10
-    }
+        state["status"] = "payment_pending"
 
-    # Resume Rust StepAgent
+        state["payment_intent"] = {
+            "merchant_wallet": "0xMERCHANT_WALLET",
+            "amount_wusd": 10
+        }
+
+        event_name = "human_approved"
+
+    else:
+
+        state["status"] = "rejected"
+        state["payment_intent"] = None
+
+        event_name = "human_rejected"
+
     try:
         requests.post(
             f"{WEIL_RPC}/step-agent/{STEP_AGENT_ADDRESS}/resume",
             json={
                 "flow_id": flow_id,
-                "event": "human_approved",
-                "decision": body.decision
+                "event": event_name
             }
         )
     except:
-        print("StepAgent resume failed (dev mode)")
+        print("StepAgent resume failed")
 
-    return {
-        "flow_id": flow_id,
-        "status": "payment_pending"
-    }
+    return state
 
 
 # -----------------------------
@@ -225,11 +226,8 @@ async def payment_intent(flow_id: str):
 
     state = FLOW_REGISTRY[flow_id]
 
-    if state["payment_intent"] is None:
-        state["payment_intent"] = {
-            "merchant_wallet": "0xMERCHANT_WALLET",
-            "amount_wusd": 10
-        }
+    if state["status"] != "payment_pending":
+        raise HTTPException(status_code=400, detail="Payment not allowed")
 
     return state["payment_intent"]
 
@@ -246,6 +244,9 @@ async def payment_confirmed(flow_id: str, body: PaymentConfirmedRequest):
 
     state = FLOW_REGISTRY[flow_id]
 
+    if state["status"] != "payment_pending":
+        raise HTTPException(status_code=400, detail="Payment not allowed")
+
     state["status"] = "payment_confirmed"
 
     try:
@@ -259,10 +260,7 @@ async def payment_confirmed(flow_id: str, body: PaymentConfirmedRequest):
     except:
         print("StepAgent resume failed")
 
-    return {
-        "flow_id": flow_id,
-        "status": "payment_confirmed"
-    }
+    return state
 
 
 # -----------------------------
@@ -272,3 +270,4 @@ async def payment_confirmed(flow_id: str, body: PaymentConfirmedRequest):
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
