@@ -13,16 +13,21 @@ export default function CustomerStore() {
   const [orderStatus, setOrderStatus] = useState<string>("not_started");
 
   const [paymentIntent, setPaymentIntent] = useState<any>(null);
+  const [paying, setPaying] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
   // -----------------------------
-  // Restore flowId if page refreshes
+  // Restore order if page refreshed
   // -----------------------------
 
   useEffect(() => {
+
     const savedFlow = localStorage.getItem("flowId");
+
     if (savedFlow) {
       setFlowId(savedFlow);
     }
+
   }, []);
 
   // -----------------------------
@@ -30,9 +35,28 @@ export default function CustomerStore() {
   // -----------------------------
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/products`)
-      .then(res => res.json())
-      .then(setProducts);
+
+    const loadProducts = async () => {
+
+      try {
+
+        const res = await fetch(`${API_BASE_URL}/products`);
+        const data = await res.json();
+
+        setProducts(data);
+
+      } catch {
+
+        console.log("Failed to load products");
+
+      }
+
+      setLoadingProducts(false);
+
+    };
+
+    loadProducts();
+
   }, []);
 
   // -----------------------------
@@ -45,12 +69,64 @@ export default function CustomerStore() {
 
     const interval = setInterval(async () => {
 
-      const res = await fetch(`${API_BASE_URL}/orders/${flowId}`);
-      const data = await res.json();
+      try {
 
-      setOrderStatus(data.status);
+        const res = await fetch(`${API_BASE_URL}/orders/${flowId}`);
 
-    }, 3000);
+        if (!res.ok) {
+
+          // backend reset or order removed
+          localStorage.removeItem("flowId");
+          setFlowId(null);
+          setOrderStatus("not_started");
+          setPaymentIntent(null);
+          return;
+
+        }
+
+        const data = await res.json();
+
+        setOrderStatus(data.status);
+
+        if (data.status !== "payment_pending") {
+          setPaymentIntent(null);
+        }
+
+        // order rejected
+        if (data.status === "rejected") {
+
+          alert("Order rejected by admin");
+
+          localStorage.removeItem("flowId");
+
+          setFlowId(null);
+          setCart([]);
+          setPaymentIntent(null);
+          setOrderStatus("not_started");
+
+        }
+
+        // order completed
+        if (data.status === "payment_confirmed") {
+
+          alert("Order completed successfully");
+
+          localStorage.removeItem("flowId");
+
+          setFlowId(null);
+          setCart([]);
+          setPaymentIntent(null);
+          setOrderStatus("not_started");
+
+        }
+
+      } catch {
+
+        console.log("Polling failed");
+
+      }
+
+    }, 2000);
 
     return () => clearInterval(interval);
 
@@ -70,7 +146,8 @@ export default function CustomerStore() {
         method: "POST"
       })
         .then(res => res.json())
-        .then(setPaymentIntent);
+        .then(setPaymentIntent)
+        .catch(() => console.log("Payment intent error"));
 
     }
 
@@ -81,7 +158,9 @@ export default function CustomerStore() {
   // -----------------------------
 
   const connectWallet = () => {
+
     setWalletAddress("0xLOCAL_DEV_WALLET");
+
   };
 
   // -----------------------------
@@ -121,32 +200,39 @@ export default function CustomerStore() {
       return;
     }
 
-    if (flowId) {
+    // allow new order if previous finished
+    if (flowId && orderStatus !== "rejected" && orderStatus !== "payment_confirmed") {
       alert("Order already in progress");
       return;
     }
 
-    const res = await fetch(`${API_BASE_URL}/orders`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        cart,
-        customer_wallet: walletAddress
-      })
-    });
+    try {
 
-    const data = await res.json();
+      const res = await fetch(`${API_BASE_URL}/orders`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          cart,
+          customer_wallet: walletAddress
+        })
+      });
 
-    console.log("Order created:", data);
+      const data = await res.json();
 
-    setFlowId(data.flow_id);
-    localStorage.setItem("flowId", data.flow_id);
+      setFlowId(data.flow_id);
+      localStorage.setItem("flowId", data.flow_id);
 
-    setOrderStatus(data.status);
+      setOrderStatus(data.status);
 
-    alert("Order created!");
+      alert("Order created!");
+
+    } catch {
+
+      alert("Failed to create order");
+
+    }
 
   };
 
@@ -156,27 +242,51 @@ export default function CustomerStore() {
 
   const payWithWusd = async () => {
 
+    if (!flowId || orderStatus !== "payment_pending") {
+      alert("Payment not allowed");
+      return;
+    }
+
+    if (!paymentIntent) {
+      alert("Payment intent missing");
+      return;
+    }
+
+    setPaying(true);
+
     const txHash = "0xMOCK_TX_" + Date.now();
 
-    await fetch(`${API_BASE_URL}/orders/${flowId}/payment-confirmed`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        tx_hash: txHash,
-        amount_wusd: paymentIntent.amount_wusd
-      })
-    });
+    try {
 
-    alert("Payment successful!");
+      const res = await fetch(`${API_BASE_URL}/orders/${flowId}/payment-confirmed`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          tx_hash: txHash,
+          amount_wusd: paymentIntent.amount_wusd
+        })
+      });
 
-    localStorage.removeItem("flowId");
+      if (!res.ok) throw new Error();
 
-    setCart([]);
-    setFlowId(null);
-    setPaymentIntent(null);
-    setOrderStatus("completed");
+      alert("Payment successful!");
+
+      localStorage.removeItem("flowId");
+
+      setCart([]);
+      setFlowId(null);
+      setPaymentIntent(null);
+      setOrderStatus("not_started");
+
+    } catch {
+
+      alert("Payment failed");
+
+    }
+
+    setPaying(false);
 
   };
 
@@ -190,6 +300,8 @@ export default function CustomerStore() {
       </button>
 
       <h2>Products</h2>
+
+      {loadingProducts && <p>Loading products...</p>}
 
       <div
         style={{
@@ -240,6 +352,8 @@ export default function CustomerStore() {
 
       <h2>Cart</h2>
 
+      {cart.length === 0 && <p>Cart empty</p>}
+
       {cart.map((c, i) => (
         <p key={i}>
           {c.sku} x {c.quantity}
@@ -267,8 +381,8 @@ export default function CustomerStore() {
 
           <h3>Payment</h3>
 
-          <button onClick={payWithWusd}>
-            Pay with WUSD
+          <button onClick={payWithWusd} disabled={paying}>
+            {paying ? "Processing..." : "Pay with WUSD"}
           </button>
 
         </div>
@@ -277,3 +391,4 @@ export default function CustomerStore() {
     </div>
   );
 }
+
